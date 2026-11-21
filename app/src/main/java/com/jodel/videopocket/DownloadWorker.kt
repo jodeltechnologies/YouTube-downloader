@@ -3,13 +3,12 @@ package com.jodel.videopocket
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.Uri
-import android.os.Environment
-import android.provider.MediaStore
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.core.app.NotificationCompat
 import androidx.work.*
 import com.yausername.youtubedl_android.YoutubeDL
@@ -46,6 +45,9 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
         val store = TransferStore(applicationContext)
         val session = inputData.getString("session") ?: processId
         val folder = TransferFiles.directory(applicationContext.filesDir, session)
+        val destinationTree = inputData.getString("tree") ?: store.current()?.takeIf { it.session == session }?.tree.orEmpty()
+        val destinationName = inputData.getString("destinationName") ?: "Downloads/Video Pocket"
+        var downloading = false
         var completed = false
         var published: Uri? = null
         val deadline = Executors.newSingleThreadScheduledExecutor()
@@ -95,32 +97,41 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
                     report(message, progress)
                 }
             }
+            downloading = true
             YoutubeDL.execute(request, processId, callback)
+            downloading = false
             if (isStopped) return Result.failure(workDataOf("message" to "Download cancelled."))
             val ext = if (audio) "mp3" else "mp4"
             val file = folder.listFiles()?.firstOrNull { it.extension == ext && it.length() > 0 && !Regex("\\.f\\d+\\.").containsMatchIn(it.name) && !it.name.contains(".temp.") }
                 ?: throw IllegalStateException("No complete file was produced. The video may be live, longer than two hours, or unavailable in this format.")
             if (file.length() > 500L * 1024 * 1024) throw IllegalStateException("The file is larger than 500 MB. Choose a lower quality.")
-            report("Saving to Downloads/Video Pocket…", 99)
-            val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, file.name)
-                put(MediaStore.Downloads.MIME_TYPE, if (audio) "audio/mpeg" else "video/mp4")
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Video Pocket")
-                put(MediaStore.Downloads.IS_PENDING, 1)
-            }
+            report("Saving to $destinationName…", 99)
             val resolver = applicationContext.contentResolver
-            published = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: throw IllegalStateException("Could not create the file in Downloads.")
-            resolver.openOutputStream(published)?.use { output -> file.inputStream().use { it.copyTo(output) } }
-                ?: throw IllegalStateException("Could not write the downloaded file.")
+            published = DownloadDestination.create(applicationContext, file.name, if (audio) "audio/mpeg" else "video/mp4", destinationTree)
+            resolver.openOutputStream(published)?.use { output ->
+                file.inputStream().use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        if (isStopped) throw InterruptedException("Download paused while saving")
+                        val size = input.read(buffer)
+                        if (size < 0) break
+                        output.write(buffer, 0, size)
+                    }
+                }
+            } ?: throw IllegalStateException("Could not write the downloaded file.")
             if (isStopped) throw InterruptedException("Download paused while saving")
-            resolver.update(published, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            DownloadDestination.finish(applicationContext, published, destinationTree)
             saveHistory(file.name, published.toString(), audio)
             completed = true
             store.clear(session)
-            return Result.success(workDataOf("message" to "Saved to Downloads/Video Pocket", "uri" to published.toString(), "filename" to file.name))
+            return Result.success(workDataOf("message" to "Saved to $destinationName", "uri" to published.toString(), "filename" to file.name))
         } catch (error: Exception) {
-            published?.let { try { applicationContext.contentResolver.delete(it, null, null) } catch (_: Exception) {} }
+            published?.let { try { DownloadDestination.remove(applicationContext, it, destinationTree) } catch (_: Exception) {} }
+            if (!isStopped && downloading && NetworkRetry.shouldRetry(error.message, isOnline(), runAttemptCount)) {
+                store.state(session, "waiting")
+                setProgressAsync(workDataOf("message" to "Connection interrupted. Download will resume automatically.", "percent" to -1))
+                return Result.retry()
+            }
             if (!isStopped) store.state(session, "paused")
             val message = if (isStopped) "Download stopped. Partial files are kept unless cancelled." else if (inputData.getString("action") == "update") "Could not update the engine. Check your internet and try again." else DownloadError.message(error.message)
             return Result.failure(workDataOf("message" to message))
@@ -128,6 +139,11 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
             deadline.shutdownNow()
             TransferFiles.finish(folder, completed, store.isDiscarded(session))
         }
+    }
+    private fun isOnline(): Boolean {
+        val manager = applicationContext.getSystemService(ConnectivityManager::class.java)
+        val network = manager.activeNetwork ?: return false
+        return manager.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
     }
     override fun onStopped() {
         try { YoutubeDL.destroyProcessById(processId) } catch (_: Exception) {}

@@ -18,6 +18,8 @@ import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import java.util.concurrent.TimeUnit
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.work.*
@@ -33,6 +35,17 @@ class MainActivity : ComponentActivity() {
     private lateinit var url: EditText
     private lateinit var format: Spinner
     private lateinit var quality: Spinner
+    private lateinit var folderLabel: TextView
+    private lateinit var chooseFolder: Button
+    private lateinit var defaultFolder: Button
+    private val folderPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
+        if (tree != null) {
+            try {
+                contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                setDestination(tree.toString(), DownloadDestination.name(this, tree))
+            } catch (_: Exception) { toast("Could not use this folder. Choose a writable folder or use Downloads.") }
+        }
+    }
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
     private lateinit var start: Button
@@ -61,6 +74,8 @@ class MainActivity : ComponentActivity() {
             val busy = active != null
             start.isEnabled = !busy
             update.isEnabled = !busy
+            chooseFolder.isEnabled = !busy
+            defaultFolder.isEnabled = !busy
             val saved = transfers.current()
             stop.visibility = if (busy || saved != null) View.VISIBLE else View.GONE
             pause.visibility = if (busy && saved != null) View.VISIBLE else View.GONE
@@ -75,7 +90,7 @@ class MainActivity : ComponentActivity() {
                         if (value >= 0) progress.progress = value
                         progress.visibility = View.VISIBLE
                     }
-                    WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> { status.text = "Waiting for an internet connection…"; progress.isIndeterminate = true; progress.visibility = View.VISIBLE }
+                    WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> { status.text = if (saved?.state == "waiting" || work.runAttemptCount > 0) "Connection interrupted. Will resume automatically when internet is available." else "Waiting for an internet connection…"; progress.isIndeterminate = true; progress.visibility = View.VISIBLE }
                     WorkInfo.State.SUCCEEDED -> { status.text = work.outputData.getString("message") ?: "Download complete."; progress.visibility = View.GONE; completedUri = work.outputData.getString("uri") }
                     WorkInfo.State.FAILED -> { status.text = work.outputData.getString("message") ?: "Download failed. Please try again."; progress.visibility = View.GONE }
                     WorkInfo.State.CANCELLED -> { status.text = if (saved != null) "Download paused. Tap Resume to continue." else "Download cancelled."; progress.visibility = View.GONE }
@@ -141,7 +156,7 @@ class MainActivity : ComponentActivity() {
         completedUri = null
         open.visibility = View.GONE
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(url.windowToken, 0)
-        val transfer = transfers.start(link, format.selectedItemPosition == 1, listOf(360, 480, 720, 1080)[quality.selectedItemPosition])
+        val transfer = transfers.start(link, format.selectedItemPosition == 1, listOf(360, 480, 720, 1080)[quality.selectedItemPosition], prefs.getString("downloadTree", "").orEmpty(), prefs.getString("downloadFolderName", "Downloads/Video Pocket").orEmpty())
         enqueueTransfer(transfer)
     }
     private fun enqueueTransfer(transfer: TransferStore.Transfer) {
@@ -152,13 +167,21 @@ class MainActivity : ComponentActivity() {
         open.visibility = View.GONE
         transfers.state(transfer.session, "running")
         val request = OneTimeWorkRequestBuilder<DownloadWorker>()
-            .setInputData(workDataOf("session" to transfer.session, "url" to transfer.url, "audio" to transfer.audio, "height" to transfer.height))
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
+            .setInputData(workDataOf("session" to transfer.session, "url" to transfer.url, "audio" to transfer.audio, "height" to transfer.height, "tree" to transfer.tree, "destinationName" to transfer.destinationName))
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS).build()
         prefs.edit().putString("lastWork", request.id.toString()).apply()
         start.isEnabled = false
         resume.visibility = View.GONE
         status.text = "Preparing download. Saved parts will be continued where possible…"
         WorkManager.getInstance(this).enqueueUniqueWork("pocket-download", ExistingWorkPolicy.KEEP, request)
+    }
+    private fun setDestination(tree: String, name: String) {
+        prefs.edit().putString("downloadTree", tree).putString("downloadFolderName", name).apply()
+        if (active == null) transfers.destination(tree, name)
+        folderLabel.text = "Save to: $name"
+        status.text = if (transfers.current() != null) "Folder updated. Tap Resume to continue saving there." else "New downloads will be saved in $name."
     }
     private fun pauseDownload() {
         transfers.current()?.let { transfers.state(it.session, "paused") }
@@ -245,9 +268,18 @@ class MainActivity : ComponentActivity() {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
         card.addView(space(15))
+        card.addView(text("Download location", 14, ink, true))
+        folderLabel = text("Save to: " + prefs.getString("downloadFolderName", "Downloads/Video Pocket"), 14, muted)
+        card.addView(folderLabel)
+        chooseFolder = button("Choose folder", false) { folderPicker.launch(prefs.getString("downloadTree", "")?.takeIf { it.isNotEmpty() }?.let { Uri.parse(it) }) }
+        card.addView(chooseFolder)
+        defaultFolder = button("Use Downloads folder", false) { setDestination("", "Downloads/Video Pocket") }
+        card.addView(defaultFolder)
+        card.addView(text("Choose a folder on your phone or SD card. Android may ask you to create a subfolder. Your choice is remembered.", 12, muted))
+        card.addView(space(15))
         start = button("↓  Download to phone", true) { beginDownload() }
         card.addView(start)
-        status = text("Files are saved in Downloads/Video Pocket.", 14, muted).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        status = text("Downloads resume automatically after temporary network interruptions.", 14, muted).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
         card.addView(status)
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { visibility = View.GONE; max = 100 }
         card.addView(progress, LinearLayout.LayoutParams(-1, dp(12)))
@@ -269,7 +301,8 @@ class MainActivity : ComponentActivity() {
         root.addView(space(20))
         update = button("Update download engine", false) {
             if (active == null) {
-                val work = OneTimeWorkRequestBuilder<DownloadWorker>().setInputData(workDataOf("action" to "update")).setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
+                val work = OneTimeWorkRequestBuilder<DownloadWorker>().setInputData(workDataOf("action" to "update")).setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS).build()
                 prefs.edit().putString("lastWork", work.id.toString()).apply()
                 WorkManager.getInstance(this).enqueueUniqueWork("pocket-download", ExistingWorkPolicy.KEEP, work)
             }

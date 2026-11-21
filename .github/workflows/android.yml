@@ -37,5 +37,5 @@ jobs:
           if ! gh release view preview >/dev/null 2>&1; then
             gh release create preview --title "Video Pocket Android preview" --prerelease --notes "Standalone Android 10+ preview. Download Video-Pocket.apk below. No server or ChatGPT account is required. Physical-phone testing is still needed."
           fi
-          cp Video-Pocket.apk Video-Pocket-1.1.0.apk
-          gh release upload preview Video-Pocket.apk Video-Pocket-1.1.0.apk --clobber
+          cp Video-Pocket.apk Video-Pocket-1.2.0.apk
+          gh release upload preview Video-Pocket.apk Video-Pocket-1.2.0.apk --clobber

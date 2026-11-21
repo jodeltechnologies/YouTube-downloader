@@ -15,13 +15,15 @@ Android 10 or later is required. After a successful build, download **Video-Pock
 
 ## Use
 
-Paste a YouTube or Shorts link, choose MP4 video or MP3 audio, choose a video quality, and tap Download to phone. Files are saved into **Downloads/Video Pocket** and remain there independently of this app. Recent entries can open saved files. No broad storage permission is requested.
+Paste a YouTube or Shorts link, choose MP4 video or MP3 audio, choose a video quality, and tap Download to phone. Choose **Download location > Choose folder** to select a folder on your phone or SD card using Android's folder picker. The app remembers your choice and uses it for future downloads. **Use Downloads folder** returns to the default destination. Pause a download before changing its destination, then Resume. Android may restrict selecting a drive root or the Downloads root, so choose a subfolder. If a selected folder becomes unavailable, choose it again or use Downloads, then Resume. Partial files remain safely inside the app until the completed file is copied to your chosen destination.
+
+By default, files are saved into **Downloads/Video Pocket** and remain there independently of this app. Recent entries can open saved files. No broad storage permission is requested.
 
 From YouTube, a browser, or another app, select **Share > Video Pocket**. Shared video links download automatically by default using the last selected format and quality. Switch this off in Link capture to review links before downloading. If another download is active, the incoming link is filled for the next download and does not interrupt the current one.
 
 Optional clipboard detection checks copied links when Video Pocket gains focus. It fills the link field without downloading automatically. Android may display a clipboard access notice. The app does not monitor other apps in the background or silently intercept every browser download. YouTube links can also be opened with Video Pocket where Android offers an app chooser. Verified YouTube app links may continue to open YouTube, so Share is the reliable path.
 
-Download progress is shown in the app and a foreground notification. Allow notifications to see it outside the app. Android battery restrictions or force-stop can still interrupt transfers. Pause is available in the app and notification. Resume continues saved .part files and fragment checkpoints when the source supports it. Partial downloads survive app closure and phone restarts. Cancel removes the saved parts. If the source stream changes or does not support continuation, yt-dlp may restart that stream. Keep sufficient free device storage for the temporary and final files.
+Download progress is shown in the app and a foreground notification. Allow notifications to see it outside the app. Android battery restrictions or force-stop can still interrupt transfers. Pause is available in the app and notification. Resume continues saved .part files and fragment checkpoints when the source supports it. Partial downloads survive app closure and phone restarts. Temporary connection errors retry automatically with increasing delays. If the network disconnects, WorkManager waits for connectivity and continues from the same partial files when Android allows it to run. After 10 failed automatic retries, Resume remains available. Private videos, denied access and unavailable formats are not retried automatically. Cancel removes the saved parts. If the source stream changes or does not support continuation, yt-dlp may restart that stream. Keep sufficient free device storage for the temporary and final files.
 
 ## Limits
 
@@ -43,4 +45,4 @@ The Android library bundles native executables. APK size is larger than a normal
 
 ## Verification
 
-See the commit/build status and the work report. Unit tests cover YouTube link extraction, deceptive host rejection, preservation and removal of partial files, and readable error messages. Physical-phone downloads and Android Share-menu registration still require device testing.
+See the commit/build status and the work report. Unit tests cover YouTube link extraction, deceptive host rejection, preservation and removal of partial files, readable errors, and transient versus permanent retry decisions. Folder selection and network switching still need physical-device verification. Physical-phone downloads and Android Share-menu registration still require device testing.
