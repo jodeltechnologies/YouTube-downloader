@@ -170,9 +170,9 @@ class MainActivity : ComponentActivity() {
         if (saved != null) transfers.discard(saved.session)
         WorkManager.getInstance(this).cancelUniqueWork("pocket-download")
         if (saved != null) Thread {
-            // A stopped worker also deletes its parts after terminating its process.
-            // A paused worker is already finished, so its parts can be removed now.
-            if (active == null) TransferFiles.finish(TransferFiles.directory(filesDir, saved.session), false, true)
+            // Queued work may never run its cleanup. Remove parts here too.
+            // A stopping worker repeats cleanup after its process exits.
+            TransferFiles.finish(TransferFiles.directory(filesDir, saved.session), false, true)
         }.start()
         resume.visibility = View.GONE
         pause.visibility = View.GONE
