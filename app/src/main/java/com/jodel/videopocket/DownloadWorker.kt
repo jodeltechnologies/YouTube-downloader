@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit
 class DownloadWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     private val processId = id.toString()
     private var lastUpdate = 0L
+    companion object { private val engineLock = Any() }
     private fun notification(text: String, progress: Int = -1): android.app.Notification {
         val manager = applicationContext.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("downloads", "Downloads", NotificationManager.IMPORTANCE_LOW))
@@ -32,34 +33,42 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
             .setSmallIcon(android.R.drawable.stat_sys_download).setContentTitle("Video Pocket")
             .setContentText(text).setOngoing(true).setContentIntent(intent)
             .setProgress(100, progress.coerceAtLeast(0), progress < 0)
-            .addAction(android.R.drawable.ic_delete, "Cancel", WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)).build()
+            .addAction(android.R.drawable.ic_delete, "Pause", WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)).build()
     }
     private fun foreground(text: String, progress: Int = -1) = ForegroundInfo(41, notification(text, progress), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     private fun report(text: String, progress: Int = -1) {
         setProgressAsync(workDataOf("message" to text, "percent" to progress))
         setForegroundAsync(foreground(text, progress))
     }
-    override fun doWork(): Result {
-        val folder = File(applicationContext.cacheDir, "download-$processId")
+    override fun doWork(): Result = synchronized(engineLock) { performWork() }
+    private fun performWork(): Result {
+        if (isStopped) return Result.failure()
+        val store = TransferStore(applicationContext)
+        val session = inputData.getString("session") ?: processId
+        val folder = TransferFiles.directory(applicationContext.filesDir, session)
+        var completed = false
         var published: Uri? = null
         val deadline = Executors.newSingleThreadScheduledExecutor()
         try {
             setForegroundAsync(foreground("Preparing download engine…")).get()
-            YoutubeDL.init(applicationContext)
+            val updating = inputData.getString("action") == "update"
+            EngineBootstrap.prepare(applicationContext, updating) { report(it) }
             FFmpeg.init(applicationContext)
-            if (inputData.getString("action") == "update") {
-                report("Checking for a download engine update…")
-                YoutubeDL.updateYoutubeDL(applicationContext)
+            if (updating) {
                 return Result.success(workDataOf("message" to "Download engine is up to date."))
             }
             val url = YouTubeLink.canonical(inputData.getString("url") ?: "")
                 ?: return Result.failure(workDataOf("message" to "Invalid YouTube link."))
             val audio = inputData.getBoolean("audio", false)
             val height = inputData.getInt("height", 720).takeIf { it in listOf(360, 480, 720, 1080) } ?: 720
+            if (isStopped) return Result.failure()
+            store.state(session, "running")
             folder.mkdirs()
             val request = YoutubeDLRequest(url)
             request.addOption("--no-playlist")
             request.addOption("--no-mtime")
+            request.addOption("--continue")
+            request.addOption("--remote-components", "ejs:github")
             request.addOption("--socket-timeout", "25")
             request.addOption("--retries", "2")
             request.addOption("--fragment-retries", "2")
@@ -89,7 +98,7 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
             YoutubeDL.execute(request, processId, callback)
             if (isStopped) return Result.failure(workDataOf("message" to "Download cancelled."))
             val ext = if (audio) "mp3" else "mp4"
-            val file = folder.listFiles()?.firstOrNull { it.extension == ext && it.length() > 0 }
+            val file = folder.listFiles()?.firstOrNull { it.extension == ext && it.length() > 0 && !Regex("\\.f\\d+\\.").containsMatchIn(it.name) && !it.name.contains(".temp.") }
                 ?: throw IllegalStateException("No complete file was produced. The video may be live, longer than two hours, or unavailable in this format.")
             if (file.length() > 500L * 1024 * 1024) throw IllegalStateException("The file is larger than 500 MB. Choose a lower quality.")
             report("Saving to Downloads/Video Pocket…", 99)
@@ -104,16 +113,20 @@ class DownloadWorker(context: Context, params: WorkerParameters) : Worker(contex
                 ?: throw IllegalStateException("Could not create the file in Downloads.")
             resolver.openOutputStream(published)?.use { output -> file.inputStream().use { it.copyTo(output) } }
                 ?: throw IllegalStateException("Could not write the downloaded file.")
+            if (isStopped) throw InterruptedException("Download paused while saving")
             resolver.update(published, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
             saveHistory(file.name, published.toString(), audio)
+            completed = true
+            store.clear(session)
             return Result.success(workDataOf("message" to "Saved to Downloads/Video Pocket", "uri" to published.toString(), "filename" to file.name))
         } catch (error: Exception) {
             published?.let { try { applicationContext.contentResolver.delete(it, null, null) } catch (_: Exception) {} }
-            val message = if (isStopped) "Download cancelled." else error.message?.take(450) ?: "Download failed. Check your connection and try again."
+            if (!isStopped) store.state(session, "paused")
+            val message = if (isStopped) "Download stopped. Partial files are kept unless cancelled." else if (inputData.getString("action") == "update") "Could not update the engine. Check your internet and try again." else DownloadError.message(error.message)
             return Result.failure(workDataOf("message" to message))
         } finally {
             deadline.shutdownNow()
-            folder.deleteRecursively()
+            TransferFiles.finish(folder, completed, store.isDiscarded(session))
         }
     }
     override fun onStopped() {

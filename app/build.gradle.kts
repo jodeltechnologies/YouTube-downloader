@@ -6,8 +6,8 @@ android {
         applicationId = "com.jodel.videopocket"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
@@ -22,3 +22,13 @@ dependencies {
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
     testImplementation("junit:junit:4.13.2")
 }
+
+val prepareDownloadEngine by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir)
+    commandLine("python3", "scripts/prepare_engine.py")
+    inputs.file(rootProject.file("engine.json"))
+    inputs.file(rootProject.file("scripts/prepare_engine.py"))
+    outputs.file(project.file("src/main/res/raw/ytdlp"))
+    outputs.file(project.file("src/main/assets/engine-version.txt"))
+}
+tasks.named("preBuild") { dependsOn(prepareDownloadEngine) }

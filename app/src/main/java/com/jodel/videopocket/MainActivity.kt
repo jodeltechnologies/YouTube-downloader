@@ -37,6 +37,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var progress: ProgressBar
     private lateinit var start: Button
     private lateinit var stop: Button
+    private lateinit var pause: Button
+    private lateinit var resume: Button
+    private val transfers by lazy { TransferStore(this) }
     private lateinit var update: Button
     private lateinit var autoShare: Switch
     private lateinit var clipboardCapture: Switch
@@ -58,7 +61,11 @@ class MainActivity : ComponentActivity() {
             val busy = active != null
             start.isEnabled = !busy
             update.isEnabled = !busy
-            stop.visibility = if (busy) View.VISIBLE else View.GONE
+            val saved = transfers.current()
+            stop.visibility = if (busy || saved != null) View.VISIBLE else View.GONE
+            pause.visibility = if (busy && saved != null) View.VISIBLE else View.GONE
+            resume.visibility = if (!busy && saved != null) View.VISIBLE else View.GONE
+            start.isEnabled = !busy && saved == null
             if (work != null) {
                 when (work.state) {
                     WorkInfo.State.RUNNING -> {
@@ -71,9 +78,10 @@ class MainActivity : ComponentActivity() {
                     WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> { status.text = "Waiting for an internet connection…"; progress.isIndeterminate = true; progress.visibility = View.VISIBLE }
                     WorkInfo.State.SUCCEEDED -> { status.text = work.outputData.getString("message") ?: "Download complete."; progress.visibility = View.GONE; completedUri = work.outputData.getString("uri") }
                     WorkInfo.State.FAILED -> { status.text = work.outputData.getString("message") ?: "Download failed. Please try again."; progress.visibility = View.GONE }
-                    WorkInfo.State.CANCELLED -> { status.text = "Download cancelled."; progress.visibility = View.GONE }
+                    WorkInfo.State.CANCELLED -> { status.text = if (saved != null) "Download paused. Tap Resume to continue." else "Download cancelled."; progress.visibility = View.GONE }
                 }
             }
+            if (!busy && saved != null && (work == null || work.state == WorkInfo.State.SUCCEEDED)) status.text = "Partial download saved. Tap Resume to continue."
             open.visibility = if (!busy && completedUri != null) View.VISIBLE else View.GONE
             renderHistory()
             if (!initialWorkLoaded) {
@@ -125,6 +133,7 @@ class MainActivity : ComponentActivity() {
     }
     private fun beginDownload() {
         if (active != null) { toast("A download is already running."); return }
+        if (transfers.current() != null) { status.text = "Resume or cancel the saved download before starting another."; return }
         val link = YouTubeLink.canonical(url.text.toString()) ?: YouTubeLink.capture(url.text.toString())
         if (link == null) { url.error = "Enter a valid YouTube or Shorts link"; return }
         url.setText(link)
@@ -132,13 +141,44 @@ class MainActivity : ComponentActivity() {
         completedUri = null
         open.visibility = View.GONE
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(url.windowToken, 0)
+        val transfer = transfers.start(link, format.selectedItemPosition == 1, listOf(360, 480, 720, 1080)[quality.selectedItemPosition])
+        enqueueTransfer(transfer)
+    }
+    private fun enqueueTransfer(transfer: TransferStore.Transfer) {
+        url.setText(transfer.url)
+        format.setSelection(if (transfer.audio) 1 else 0)
+        quality.setSelection(listOf(360, 480, 720, 1080).indexOf(transfer.height).coerceAtLeast(0))
+        completedUri = null
+        open.visibility = View.GONE
+        transfers.state(transfer.session, "running")
         val request = OneTimeWorkRequestBuilder<DownloadWorker>()
-            .setInputData(workDataOf("url" to link, "audio" to (format.selectedItemPosition == 1), "height" to listOf(360, 480, 720, 1080)[quality.selectedItemPosition]))
+            .setInputData(workDataOf("session" to transfer.session, "url" to transfer.url, "audio" to transfer.audio, "height" to transfer.height))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
         prefs.edit().putString("lastWork", request.id.toString()).apply()
         start.isEnabled = false
-        status.text = "Starting download…"
+        resume.visibility = View.GONE
+        status.text = "Preparing download. Saved parts will be continued where possible…"
         WorkManager.getInstance(this).enqueueUniqueWork("pocket-download", ExistingWorkPolicy.KEEP, request)
+    }
+    private fun pauseDownload() {
+        transfers.current()?.let { transfers.state(it.session, "paused") }
+        status.text = "Pausing and keeping downloaded parts…"
+        WorkManager.getInstance(this).cancelUniqueWork("pocket-download")
+    }
+    private fun cancelDownload() {
+        val saved = transfers.current()
+        if (saved != null) transfers.discard(saved.session)
+        WorkManager.getInstance(this).cancelUniqueWork("pocket-download")
+        if (saved != null) Thread {
+            // A stopped worker also deletes its parts after terminating its process.
+            // A paused worker is already finished, so its parts can be removed now.
+            if (active == null) TransferFiles.finish(TransferFiles.directory(filesDir, saved.session), false, true)
+        }.start()
+        resume.visibility = View.GONE
+        pause.visibility = View.GONE
+        stop.visibility = View.GONE
+        status.text = "Download cancelled. Partial files removed."
+        start.isEnabled = active == null
     }
     private fun openFile(value: String, audio: Boolean? = null) {
         try {
@@ -211,7 +251,11 @@ class MainActivity : ComponentActivity() {
         card.addView(status)
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { visibility = View.GONE; max = 100 }
         card.addView(progress, LinearLayout.LayoutParams(-1, dp(12)))
-        stop = button("Cancel download", false) { WorkManager.getInstance(this).cancelUniqueWork("pocket-download") }.apply { visibility = View.GONE }
+        pause = button("Pause download", false) { pauseDownload() }.apply { visibility = View.GONE }
+        card.addView(pause)
+        resume = button("Resume download", true) { transfers.current()?.let { if (active == null) enqueueTransfer(it) } }.apply { visibility = View.GONE }
+        card.addView(resume)
+        stop = button("Cancel and remove partial files", false) { cancelDownload() }.apply { visibility = View.GONE }
         card.addView(stop)
         open = button("Open downloaded file", false) { completedUri?.let { openFile(it) } }.apply { visibility = View.GONE }
         card.addView(open)
