@@ -4,7 +4,7 @@
 
 **[Download Video Pocket APK](https://github.com/jodeltechnologies/YouTube-downloader/releases/download/preview/Video-Pocket.apk)**
 
-Tap the link above on your phone, then open the downloaded APK to install. You do not need to download the source code or use ChatGPT. You can also open [Releases](https://github.com/jodeltechnologies/YouTube-downloader/releases/tag/preview), expand **Assets**, and select **Video-Pocket.apk**. New builds replace that same download link.
+Tap the link above on your phone, then open the downloaded APK to install. You can also open [Releases](https://github.com/jodeltechnologies/YouTube-downloader/releases/tag/preview), expand **Assets**, and select **Video-Pocket.apk**. New builds replace that same download link.
 
 
 A standalone YouTube video and audio downloader. Processing runs on your phone with bundled yt-dlp, Python, QuickJS and FFmpeg. There is no download server, hosting subscription, ChatGPT sign-in, or API key.
