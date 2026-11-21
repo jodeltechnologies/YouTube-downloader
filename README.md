@@ -4,7 +4,7 @@ A standalone YouTube video and audio downloader. Processing runs on your phone w
 
 ## Install
 
-Android 10 or later is required. Download the APK from a successful **Build Android APK** run under this repository's **Actions** tab. Open its **Video-Pocket-Android** artifact, extract `app-debug.apk`, and install it. Android will ask you to allow installation from the browser or file manager you use. This is a personal debug build, not a Play Store release. GitHub sign-in may be needed to download Actions artifacts.
+Android 10 or later is required. After a successful build, download **Video-Pocket.apk** from this repository's **Releases > Video Pocket Android preview** and install it. The Actions tab also retains a zipped APK artifact for 30 days. Android will ask you to allow installation from the browser or file manager you use. This is a personal debug build, not a Play Store release. GitHub sign-in may be needed to download Actions artifacts.
 
 ## Use
 
